@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SIEL RER Android V17</title>
+
+<style>
+:root{
+ --bg:#0b1220;
+ --card:#172033;
+ --text:#fff;
+ --muted:#9fb0c7;
+ --a:#e3051c;
+ --b:#5291ce;
+ --green:#00d084;
+ --amber:#ffb400;
+}
+
+body{
+ background:var(--bg);
+ color:var(--text);
+ font-family:Arial,Helvetica,sans-serif;
+ margin:0;
+ padding:8px;
+}
+
+.header{
+ display:flex;
+ justify-content:space-between;
+ align-items:center;
+ background:#003ca6;
+ padding:10px;
+ border-radius:6px;
+}
+
+button{
+ border:none;
+ border-radius:4px;
+ padding:8px;
+ cursor:pointer;
+}
+
+.card{
+ background:var(--card);
+ margin-top:8px;
+ border-radius:6px;
+ overflow:hidden;
+}
+
+.row{
+ display:flex;
+ align-items:center;
+ padding:10px;
+ gap:10px;
+}
+
+.badge{
+ width:30px;
+ height:30px;
+ border-radius:50%;
+ display:flex;
+ align-items:center;
+ justify-content:center;
+ font-weight:bold;
+}
+
+.A{background:var(--a);}
+.B{background:var(--b);}
+
+.destination{
+ flex:1;
+}
+
+.time{
+ color:var(--amber);
+ font-size:22px;
+ font-weight:bold;
+}
+
+.footer{
+ margin-top:10px;
+ font-size:12px;
+ color:var(--muted);
+}
+
+#debug{
+ display:none;
+ margin-top:8px;
+ background:#000;
+ color:#0f0;
+ padding:10px;
+ font-family:monospace;
+ white-space:pre-wrap;
+ font-size:12px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+ <strong>SIEL RATP</strong>
+
+ <div>
+   <button id="refresh">↻</button>
+   <button id="debugBtn">Debug</button>
+ </div>
+</div>
+
+<div id="content"></div>
+
+<div class="footer">
+ <div id="status">Initialisation...</div>
+ <div id="updated">--:--</div>
+</div>
+
+<div id="debug"></div>
+
+<script>
+
+const ROUTES = [
+ {
+   line:"B",
+   lineId:"C01743",
+   destination:"Saint-Rémy-lès-Chevreuse",
+   missionPrefixes:["P"]
+ },
+ {
+   line:"A",
+   lineId:"C01742",
+   destination:"Val de Fontenay",
+   missionPrefixes:["Q","O","T","N","Z","Y"]
+ }
+];
+
+const TransitService = {
+
+ BASE_URL:
+   "https://prim.iledefrance-mobilites.fr/marketplace",
+
+ API_KEY:
+   "CJUV46xqK7FHkEuFt6S5bvr5a1sm6xPu",
+
+ lastStatus:"",
+ lastError:"",
+
+ async fetchRouteData(route){
+
+   try{
+
+     const controller =
+       new AbortController();
+
+     const timeout =
+       setTimeout(
+         ()=>controller.abort(),
+         10000
+       );
+
+     const url =
+       `${this.BASE_URL}/vehicle-monitoring?LineRef=STIF:Line::${route.lineId}:&VehicleMonitoringDetailLevel=calls`;
+
+     const response =
+       await fetch(url,{
+         method:"GET",
+         headers:{
+           "apikey":this.API_KEY,
+           "Accept":"application/json"
+         },
+         signal:controller.signal
+       });
+
+     clearTimeout(timeout);
+
+     if(!response.ok){
+       throw new Error(
+         "HTTP "+response.status
+       );
+     }
+
+     const json =
+       await response.json();
+
+     const trains =
+       this.parseApi(json,route);
+
+     if(trains.length===0){
+       throw new Error(
+         "Aucun train trouvé"
+       );
+     }
+
+     this.lastStatus =
+       "API IDFM LIVE";
+
+     this.lastError="";
+
+     return trains;
+
+   }catch(err){
+
+     this.lastError =
+       err.message || String(err);
+
+     this.lastStatus =
+       "SIMULATION : " +
+       this.lastError;
+
+     return this.simulation(route);
+   }
+ },
+
+ parseApi(json,route){
+
+   const activities =
+     json?.Siri
+     ?.ServiceDelivery
+     ?.VehicleMonitoringDelivery?.[0]
+     ?.VehicleActivity || [];
+
+   const now = Date.now();
+
+   const result = [];
+
+   for(const act of activities){
+
+     const mvj =
+       act.MonitoredVehicleJourney;
+
+     if(!mvj) continue;
+
+     const call =
+       mvj.MonitoredCall ||
+       mvj.OnwardCalls?.OnwardCall?.[0];
+
+     const date =
+       call?.ExpectedDepartureTime ||
+       call?.ExpectedArrivalTime;
+
+     if(!date) continue;
+
+     const ts =
+       new Date(date).getTime();
+
+     if(ts < now) continue;
+
+     const min =
+       Math.round(
+         (ts-now)/60000
+       );
+
+     result.push({
+
+       mission:
+         "LIVE",
+
+       dest:
+         route.destination,
+
+       time:
+         min<=0
+         ? "QUAI"
+         : min+"'",
+
+       ts
+     });
+   }
+
+   result.sort(
+     (a,b)=>a.ts-b.ts
+   );
+
+   return result.slice(0,1);
+ },
+
+ simulation(route){
+
+   const n =
+     Math.floor(
+       Math.random()*4
+     )+2;
+
+   return [{
+     mission:"SIMU",
+     dest:route.destination,
+     time:n+"'"
+   }];
+ }
+};
+
+async function refreshAll(){
+
+ const container =
+   document.getElementById(
+     "content"
+   );
+
+ container.innerHTML="";
+
+ for(const route of ROUTES){
+
+   const trains =
+     await TransitService
+     .fetchRouteData(route);
+
+   const train =
+     trains[0];
+
+   const card =
+     document.createElement("div");
+
+   card.className="card";
+
+   card.innerHTML=`
+   <div class="row">
+     <div class="badge ${route.line}">
+       ${route.line}
+     </div>
+
+     <div class="destination">
+       ${train.dest}
+     </div>
+
+     <div class="time">
+       ${train.time}
+     </div>
+   </div>
+   `;
+
+   container.appendChild(card);
+ }
+
+ document.getElementById(
+   "status"
+ ).textContent =
+   TransitService.lastStatus;
+
+ document.getElementById(
+   "updated"
+ ).textContent =
+   new Date()
+   .toLocaleTimeString(
+     "fr-FR"
+   );
+}
+
+document
+.getElementById("refresh")
+.onclick = refreshAll;
+
+document
+.getElementById("debugBtn")
+.onclick = ()=>{
+
+ const box =
+  document.getElementById(
+    "debug"
+  );
+
+ box.style.display =
+  box.style.display==="block"
+  ? "none"
+  : "block";
+
+ box.textContent =
+
+`STATUT :
+${TransitService.lastStatus}
+
+ERREUR :
+${TransitService.lastError || "Aucune"}
+
+ONLINE :
+${navigator.onLine}
+
+URL :
+${location.href}
+
+USER AGENT :
+${navigator.userAgent}`;
+};
+
+refreshAll();
+
+setInterval(
+ refreshAll,
+ 60000
+);
+
+</script>
+
+</body>
+</html>
